@@ -60,7 +60,6 @@ describe('Fetcher', () => {
             expect(result.size).toBe(mockData.length);
             expect(result.contentType).toBe('text/html; charset=utf-8');
             expect(result.mimeType).toBe('text/html');
-            expect(result.data.toString()).toContain('hello world');
         }
     });
 

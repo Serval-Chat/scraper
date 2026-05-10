@@ -2,6 +2,12 @@ import { FetcherOptions, FetchResult } from '../types/fetch.js';
 import { validateUrl } from './url-validator.js';
 import { UrlValidationResult } from '../types/url-validator.js';
 import { fileTypeFromBuffer } from 'file-type';
+import * as cheerio from 'cheerio';
+import sharp from 'sharp';
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import axios from 'axios';
 
 export class Fetcher {
     private readonly options: FetcherOptions;
@@ -14,6 +20,8 @@ export class Fetcher {
         const originalUrl: string = url;
         let currentUrl: string = url;
         let redirects = 0;
+
+        console.log(`[Scraper] Starting fetch for: ${url}`);
 
         try {
             while (true) {
@@ -113,14 +121,87 @@ export class Fetcher {
                     return { ok: false, url: originalUrl, reason: 'Content type not allowed' };
                 }
 
-                return {
+                if (mimeType.startsWith('image/')) {
+                    const proxiedUrl = await this.proxyImage(currentUrl, data);
+                    let title: string | undefined;
+                    try {
+                        title = path.basename(new URL(currentUrl).pathname);
+                    } catch (err) {
+                        console.error(`[Scraper] Failed to parse title from ${currentUrl}:`, err);
+                    }
+                    return {
+                        ok: true,
+                        url: currentUrl,
+                        size: totalSize,
+                        contentType: contentTypeHeader,
+                        mimeType,
+                        image: proxiedUrl ? proxiedUrl : undefined,
+                        title: title || undefined,
+                    };
+                }
+
+                if (mimeType.startsWith('video/')) {
+                    let title: string | undefined;
+                    try {
+                        title = path.basename(new URL(currentUrl).pathname);
+                    } catch (err) {
+                        console.error(`[Scraper] Failed to parse title from ${currentUrl}:`, err);
+                    }
+                    return {
+                        ok: true,
+                        url: currentUrl,
+                        size: totalSize,
+                        contentType: contentTypeHeader,
+                        mimeType,
+                        video: currentUrl,
+                        title: title || undefined,
+                    };
+                }
+
+                const html = data.toString('utf-8');
+                const $ = cheerio.load(html);
+
+                const title =
+                    $('meta[property="og:title"]').attr('content') ||
+                    $('title').text() ||
+                    undefined;
+                const description =
+                    $('meta[property="og:description"]').attr('content') ||
+                    $('meta[name="description"]').attr('content') ||
+                    undefined;
+                const image = $('meta[property="og:image"]').attr('content') || undefined;
+                const providerName =
+                    $('meta[property="og:site_name"]').attr('content') || undefined;
+                const themeColor = $('meta[name="theme-color"]').attr('content') || undefined;
+
+                const result: FetchResult = {
                     ok: true,
                     url: currentUrl,
                     size: totalSize,
                     contentType: contentTypeHeader,
                     mimeType,
-                    data,
+                    title,
+                    description,
+                    providerName,
+                    themeColor,
                 };
+
+                if (image) {
+                    try {
+                        const absoluteImageUrl = new URL(image, currentUrl).href;
+
+                        if (absoluteImageUrl.startsWith('http')) {
+                            const proxiedUrl = await this.proxyImage(absoluteImageUrl);
+                            if (proxiedUrl) {
+                                result.image = proxiedUrl;
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`[Scraper] Failed to proxy image ${image}:`, err);
+                    }
+                }
+
+                return result;
             }
         } catch (error: unknown) {
             if (signal.aborted) {
@@ -135,6 +216,49 @@ export class Fetcher {
             }
 
             return { ok: false, url: originalUrl, reason: `Network error: ${String(error)}` };
+        }
+    }
+
+    private async proxyImage(imageUrl: string, preFetchedData?: Buffer): Promise<string | null> {
+        try {
+            const hash = crypto.createHash('md5').update(imageUrl).digest('hex');
+            const cacheDir = path.join(process.cwd(), 'public', 'cache');
+            const fileName = `${hash}.webp`;
+            const filePath = path.join(cacheDir, fileName);
+
+            await fs.mkdir(cacheDir, { recursive: true });
+
+            try {
+                await fs.access(filePath);
+                return fileName;
+            } catch (err) {
+                // Cache miss, we need to process the image
+                void err;
+            }
+
+            let buffer: Buffer;
+            if (preFetchedData) {
+                buffer = preFetchedData;
+            } else {
+                const response = await axios.get(imageUrl, {
+                    responseType: 'arraybuffer',
+                    timeout: 5000,
+                    headers: {
+                        'User-Agent': 'SerchatBot/1.0',
+                    },
+                });
+                buffer = Buffer.from(response.data);
+            }
+
+            await sharp(buffer)
+                .resize(1200, 630, { fit: 'inside', withoutEnlargement: true })
+                .webp({ quality: 80 })
+                .toFile(filePath);
+
+            return fileName;
+        } catch (err) {
+            console.error(`[Scraper] proxyImage failed for ${imageUrl}:`, err);
+            return null;
         }
     }
 }

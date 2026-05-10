@@ -1,5 +1,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import crypto from 'node:crypto';
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
     IncomingWsEvent,
     IWsEnvelope,
@@ -13,11 +16,13 @@ import { WsHandler, WsHandlerFn, buildHandlerMap } from './decorators.js';
 import { ILogger, ConsoleLogger } from './logger.js';
 
 export interface WsServerOptions {
+    host?: string;
     port: number;
     logger?: ILogger;
 }
 
 export class WsServer {
+    private httpServer?: http.Server;
     private wss?: WebSocketServer;
     private handlers?: Map<string, WsHandlerFn>;
 
@@ -34,7 +39,31 @@ export class WsServer {
     public start(): void {
         this.handlers = buildHandlerMap(this);
 
-        this.wss = new WebSocketServer({ port: this.options.port });
+        this.httpServer = http.createServer((req, res) => {
+            if (req.url?.startsWith('/cache/')) {
+                const fileName = req.url.replace('/cache/', '');
+                const filePath = path.join(process.cwd(), 'public', 'cache', fileName);
+
+                fs.readFile(filePath, (err, data) => {
+                    if (err) {
+                        res.writeHead(404);
+                        res.end('Not found');
+                        return;
+                    }
+                    res.writeHead(200, {
+                        'Content-Type': 'image/webp',
+                        'Access-Control-Allow-Origin': '*',
+                    });
+                    res.end(data);
+                });
+                return;
+            }
+
+            res.writeHead(404);
+            res.end('Not found');
+        });
+
+        this.wss = new WebSocketServer({ server: this.httpServer });
 
         this.wss.on('connection', (ws: WebSocket) => {
             this.logger.info('Client connected');
@@ -54,13 +83,21 @@ export class WsServer {
             });
         });
 
-        this.logger.info(`Listening on port ${this.options.port}`);
+        this.httpServer.listen(this.options.port, this.options.host, () => {
+            this.logger.info(
+                `Listening on http://${this.options.host || 'localhost'}:${this.options.port}`,
+            );
+        });
     }
 
     public stop(): void {
         if (this.wss) {
             this.wss.close();
             this.wss = undefined;
+        }
+        if (this.httpServer) {
+            this.httpServer.close();
+            this.httpServer = undefined;
         }
     }
 

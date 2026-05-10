@@ -60,7 +60,6 @@ describe('WsServer', () => {
             size: 100,
             contentType: 'text/html',
             mimeType: 'text/html',
-            data: Buffer.from('hello'),
         };
         mockQueue.enqueue.mockResolvedValueOnce(mockFetchResult);
 
@@ -198,7 +197,6 @@ describe('WsServer', () => {
             size: 0,
             contentType: 'text/html',
             mimeType: 'text/html',
-            data: Buffer.alloc(0),
         });
 
         const response = await sendRequest({ type: 'scrape', payload: { url: 'https://x.com' } });

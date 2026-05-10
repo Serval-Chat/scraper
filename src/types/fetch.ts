@@ -4,7 +4,12 @@ export interface FetchSuccess {
     size: number; // bytes
     contentType: string;
     mimeType: string;
-    data: Buffer;
+    title?: string;
+    description?: string;
+    image?: string;
+    video?: string;
+    providerName?: string;
+    themeColor?: string;
 }
 
 export interface FetchFailure {
