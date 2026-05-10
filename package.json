@@ -1,0 +1,36 @@
+{
+  "name": "scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --minify --keep-names --platform=node --format=esm --packages=external --outfile=dist/index.js --target=node22",
+    "start": "node dist/index.js",
+    "dev": "esbuild src/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/index.js --watch",
+    "lint": "eslint src/",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "test": "vitest run",
+    "knip": "knip",
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.6.2",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.0",
+    "eslint": "^10.3.0",
+    "husky": "^9.1.7",
+    "knip": "^6.12.2",
+    "prettier": "^3.8.3",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.2",
+    "vitest": "^4.1.5"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "file-type": "^22.0.1",
+    "ws": "^8.20.0"
+  }
+}
