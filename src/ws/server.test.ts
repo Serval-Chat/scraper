@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { WsServer } from './server.js';
 import { WorkQueue } from '../queue/workqueue.js';
-import { FetchResult } from '../types/fetch.js';
+import { FetchResult, TextFetchResult } from '../types/fetch.js';
 import { IWsEnvelope, IncomingWsEvent } from '../types/ws.js';
 import { SilentLogger } from './logger.js';
 
@@ -15,14 +15,17 @@ interface ParsedResponse<TPayload = Record<string, unknown>> {
 describe('WsServer', () => {
     let wsServer: WsServer;
     let mockQueue: { enqueue: ReturnType<typeof vi.fn> };
+    let mockTextQueue: { enqueue: ReturnType<typeof vi.fn> };
     let clientWs: WebSocket;
 
     beforeEach(async () => {
         mockQueue = { enqueue: vi.fn() };
+        mockTextQueue = { enqueue: vi.fn() };
 
         wsServer = new WsServer(
             { port: 0, logger: new SilentLogger() },
             mockQueue as unknown as WorkQueue<string, FetchResult>,
+            mockTextQueue as unknown as WorkQueue<string, TextFetchResult>,
         );
         wsServer.start();
 
@@ -98,6 +101,40 @@ describe('WsServer', () => {
         });
 
         expect(mockQueue.enqueue).not.toHaveBeenCalled();
+        expect(response.event.type).toBe('JobFailure');
+        expect(response.event.payload.reason).toContain('Missing URL');
+    });
+
+    it('should handle a successful fetchText job', async () => {
+        mockTextQueue.enqueue.mockResolvedValueOnce({
+            ok: true,
+            url: 'https://example.com/.well-known/serchat',
+            size: 18,
+            contentType: 'text/plain',
+            body: 'verification-token',
+        });
+
+        const response = await sendRequest<{ ok: true; body: string }>({
+            type: 'fetchText',
+            payload: { url: 'https://example.com/.well-known/serchat' },
+        });
+
+        expect(mockTextQueue.enqueue).toHaveBeenCalledWith(
+            'https://example.com/.well-known/serchat',
+        );
+        expect(mockQueue.enqueue).not.toHaveBeenCalled();
+        expect(response.meta?.replyTo).toBe('test-id-123');
+        expect(response.event.type).toBe('JobSuccess');
+        expect(response.event.payload.body).toBe('verification-token');
+    });
+
+    it('should return JobFailure when the fetchText URL is missing', async () => {
+        const response = await sendRequest<{ reason: string }>({
+            type: 'fetchText',
+            payload: { url: '' },
+        });
+
+        expect(mockTextQueue.enqueue).not.toHaveBeenCalled();
         expect(response.event.type).toBe('JobFailure');
         expect(response.event.payload.reason).toContain('Missing URL');
     });

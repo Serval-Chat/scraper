@@ -1,4 +1,4 @@
-import { FetcherOptions, FetchResult } from '../types/fetch.js';
+import { FetcherOptions, FetchResult, TextFetchResult } from '../types/fetch.js';
 import { validateUrl } from './url-validator.js';
 import { UrlValidationResult } from '../types/url-validator.js';
 import { fileTypeFromBuffer } from 'file-type';
@@ -17,149 +17,73 @@ export class Fetcher {
     }
 
     public async fetch(url: string, signal: AbortSignal): Promise<FetchResult> {
-        const originalUrl: string = url;
-        let currentUrl: string = url;
-        let redirects = 0;
-
         console.log(`[Scraper] Starting fetch for: ${url}`);
 
         try {
-            while (true) {
-                const validation: UrlValidationResult = await validateUrl(currentUrl);
-                if (!validation.ok) {
-                    return {
-                        ok: false,
-                        url: originalUrl,
-                        reason: validation.reason.startsWith('URL not allowed:')
-                            ? 'URL not allowed'
-                            : validation.reason,
-                    };
+            const fetched = await this.fetchBytes(url, signal);
+            if (!fetched.ok) return fetched;
+
+            const { currentUrl, contentTypeHeader, data, totalSize } = fetched;
+            const type = await fileTypeFromBuffer(data);
+            let mimeType: string | undefined = type?.mime;
+
+            if (!mimeType) {
+                const text = data.toString('utf-8').trim();
+                if (text.startsWith('{') || text.startsWith('[')) {
+                    mimeType = 'application/json';
+                } else if (
+                    text.toLowerCase().includes('<!doctype html') ||
+                    text.toLowerCase().includes('<html')
+                ) {
+                    mimeType = 'text/html';
+                } else {
+                    mimeType = 'text/plain';
                 }
+            }
 
-                const timeoutSignal: AbortSignal = AbortSignal.timeout(this.options.timeout);
-                const combinedSignal: AbortSignal = AbortSignal.any([signal, timeoutSignal]);
+            if (!this.options.allowedContentTypes.includes(mimeType)) {
+                return { ok: false, url, reason: 'Content type not allowed' };
+            }
 
-                const response: Response = await fetch(currentUrl, {
-                    method: 'GET',
-                    redirect: 'manual',
-                    signal: combinedSignal,
-                });
-
-                if (response.status >= 300 && response.status < 400) {
-                    redirects++;
-                    if (redirects > this.options.maxRedirects) {
-                        return { ok: false, url: originalUrl, reason: 'Too many redirects' };
-                    }
-
-                    const location: string | null = response.headers.get('location');
-                    if (!location) {
-                        return {
-                            ok: false,
-                            url: originalUrl,
-                            reason: `Redirect status ${response.status} without location header`,
-                        };
-                    }
-
-                    currentUrl = new URL(location, currentUrl).toString();
-                    continue;
-                }
-
-                if (!response.ok) {
-                    return {
-                        ok: false,
-                        url: originalUrl,
-                        reason: `Request failed: ${response.status}`,
-                    };
-                }
-
-                const contentTypeHeader: string =
-                    response.headers.get('content-type') || 'application/octet-stream';
-
-                if (!response.body) {
-                    return { ok: false, url: originalUrl, reason: 'Response body is empty' };
-                }
-
-                const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
-                const chunks: Uint8Array[] = [];
-                let totalSize = 0;
-
+            if (mimeType.startsWith('image/')) {
+                const proxiedUrl = await this.proxyImage(currentUrl, data);
+                let title: string | undefined;
                 try {
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-
-                        totalSize += value.length;
-                        if (totalSize > this.options.maxFetchSize) {
-                            await reader.cancel('Response too large');
-                            return { ok: false, url: originalUrl, reason: 'Response too large' };
-                        }
-                        chunks.push(value);
-                    }
-                } finally {
-                    reader.releaseLock();
+                    title = path.basename(new URL(currentUrl).pathname);
+                } catch (err) {
+                    console.error(`[Scraper] Failed to parse title from ${currentUrl}:`, err);
                 }
+                return {
+                    ok: true,
+                    url: currentUrl,
+                    size: totalSize,
+                    contentType: contentTypeHeader,
+                    mimeType,
+                    image: proxiedUrl ? proxiedUrl : undefined,
+                    title: title || undefined,
+                };
+            }
 
-                const data = Buffer.concat(chunks);
-                const type = await fileTypeFromBuffer(data);
-                let mimeType: string | undefined = type?.mime;
-
-                if (!mimeType) {
-                    const text = data.toString('utf-8').trim();
-                    if (text.startsWith('{') || text.startsWith('[')) {
-                        mimeType = 'application/json';
-                    } else if (
-                        text.toLowerCase().includes('<!doctype html') ||
-                        text.toLowerCase().includes('<html')
-                    ) {
-                        mimeType = 'text/html';
-                    } else {
-                        mimeType = 'text/plain';
-                    }
+            if (mimeType.startsWith('video/')) {
+                let title: string | undefined;
+                try {
+                    title = path.basename(new URL(currentUrl).pathname);
+                } catch (err) {
+                    console.error(`[Scraper] Failed to parse title from ${currentUrl}:`, err);
                 }
+                return {
+                    ok: true,
+                    url: currentUrl,
+                    size: totalSize,
+                    contentType: contentTypeHeader,
+                    mimeType,
+                    video: currentUrl,
+                    title: title || undefined,
+                };
+            }
 
-                if (!this.options.allowedContentTypes.includes(mimeType)) {
-                    return { ok: false, url: originalUrl, reason: 'Content type not allowed' };
-                }
-
-                if (mimeType.startsWith('image/')) {
-                    const proxiedUrl = await this.proxyImage(currentUrl, data);
-                    let title: string | undefined;
-                    try {
-                        title = path.basename(new URL(currentUrl).pathname);
-                    } catch (err) {
-                        console.error(`[Scraper] Failed to parse title from ${currentUrl}:`, err);
-                    }
-                    return {
-                        ok: true,
-                        url: currentUrl,
-                        size: totalSize,
-                        contentType: contentTypeHeader,
-                        mimeType,
-                        image: proxiedUrl ? proxiedUrl : undefined,
-                        title: title || undefined,
-                    };
-                }
-
-                if (mimeType.startsWith('video/')) {
-                    let title: string | undefined;
-                    try {
-                        title = path.basename(new URL(currentUrl).pathname);
-                    } catch (err) {
-                        console.error(`[Scraper] Failed to parse title from ${currentUrl}:`, err);
-                    }
-                    return {
-                        ok: true,
-                        url: currentUrl,
-                        size: totalSize,
-                        contentType: contentTypeHeader,
-                        mimeType,
-                        video: currentUrl,
-                        title: title || undefined,
-                    };
-                }
-
-                const html = data.toString('utf-8');
-                const $ = cheerio.load(html);
+            const html = data.toString('utf-8');
+            const $ = cheerio.load(html);
 
                 const title =
                     $('meta[property="og:title"]').attr('content') ||
@@ -201,21 +125,152 @@ export class Fetcher {
                     }
                 }
 
-                return result;
-            }
+            return result;
         } catch (error: unknown) {
             if (signal.aborted) {
-                return { ok: false, url: originalUrl, reason: 'Request aborted' };
+                return { ok: false, url, reason: 'Request aborted' };
             }
 
             if (error instanceof Error) {
                 if (error.name === 'TimeoutError') {
-                    return { ok: false, url: originalUrl, reason: 'Request timed out' };
+                    return { ok: false, url, reason: 'Request timed out' };
                 }
-                return { ok: false, url: originalUrl, reason: `Network error: ${error.message}` };
+                return { ok: false, url, reason: `Network error: ${error.message}` };
             }
 
-            return { ok: false, url: originalUrl, reason: `Network error: ${String(error)}` };
+            return { ok: false, url, reason: `Network error: ${String(error)}` };
+        }
+    }
+
+    public async fetchText(url: string, signal: AbortSignal): Promise<TextFetchResult> {
+        console.log(`[Scraper] Starting text fetch for: ${url}`);
+
+        try {
+            const fetched = await this.fetchBytes(url, signal);
+            if (!fetched.ok) return fetched;
+
+            return {
+                ok: true,
+                url: fetched.currentUrl,
+                size: fetched.totalSize,
+                contentType: fetched.contentTypeHeader,
+                body: fetched.data.toString('utf-8'),
+            };
+        } catch (error: unknown) {
+            if (signal.aborted) {
+                return { ok: false, url, reason: 'Request aborted' };
+            }
+
+            if (error instanceof Error) {
+                if (error.name === 'TimeoutError') {
+                    return { ok: false, url, reason: 'Request timed out' };
+                }
+                return { ok: false, url, reason: `Network error: ${error.message}` };
+            }
+
+            return { ok: false, url, reason: `Network error: ${String(error)}` };
+        }
+    }
+
+    private async fetchBytes(
+        url: string,
+        signal: AbortSignal,
+    ): Promise<
+        | {
+              ok: true;
+              currentUrl: string;
+              contentTypeHeader: string;
+              data: Buffer;
+              totalSize: number;
+          }
+        | { ok: false; url: string; reason: string }
+    > {
+        const originalUrl: string = url;
+        let currentUrl: string = url;
+        let redirects = 0;
+
+        while (true) {
+            const validation: UrlValidationResult = await validateUrl(currentUrl);
+            if (!validation.ok) {
+                return {
+                    ok: false,
+                    url: originalUrl,
+                    reason: validation.reason.startsWith('URL not allowed:')
+                        ? 'URL not allowed'
+                        : validation.reason,
+                };
+            }
+
+            const timeoutSignal: AbortSignal = AbortSignal.timeout(this.options.timeout);
+            const combinedSignal: AbortSignal = AbortSignal.any([signal, timeoutSignal]);
+
+            const response: Response = await fetch(currentUrl, {
+                method: 'GET',
+                redirect: 'manual',
+                signal: combinedSignal,
+            });
+
+            if (response.status >= 300 && response.status < 400) {
+                redirects++;
+                if (redirects > this.options.maxRedirects) {
+                    return { ok: false, url: originalUrl, reason: 'Too many redirects' };
+                }
+
+                const location: string | null = response.headers.get('location');
+                if (!location) {
+                    return {
+                        ok: false,
+                        url: originalUrl,
+                        reason: `Redirect status ${response.status} without location header`,
+                    };
+                }
+
+                currentUrl = new URL(location, currentUrl).toString();
+                continue;
+            }
+
+            if (!response.ok) {
+                return {
+                    ok: false,
+                    url: originalUrl,
+                    reason: `Request failed: ${response.status}`,
+                };
+            }
+
+            const contentTypeHeader: string =
+                response.headers.get('content-type') || 'application/octet-stream';
+
+            if (!response.body) {
+                return { ok: false, url: originalUrl, reason: 'Response body is empty' };
+            }
+
+            const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
+            const chunks: Uint8Array[] = [];
+            let totalSize = 0;
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    totalSize += value.length;
+                    if (totalSize > this.options.maxFetchSize) {
+                        await reader.cancel('Response too large');
+                        return { ok: false, url: originalUrl, reason: 'Response too large' };
+                    }
+                    chunks.push(value);
+                }
+            } finally {
+                reader.releaseLock();
+            }
+
+            return {
+                ok: true,
+                currentUrl,
+                contentTypeHeader,
+                data: Buffer.concat(chunks),
+                totalSize,
+            };
         }
     }
 

@@ -206,6 +206,34 @@ describe('Fetcher', () => {
         }
     });
 
+    it('should fetch raw text for verification files', async () => {
+        const mockData = new TextEncoder().encode('verification-token\n');
+        vi.mocked(fetch).mockResolvedValue({
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'text/plain' }),
+            body: new ReadableStream({
+                start(controller): void {
+                    controller.enqueue(mockData);
+                    controller.close();
+                },
+            }),
+        } as Response);
+
+        const fetcher = new Fetcher(defaultOptions);
+        const result = await fetcher.fetchText(
+            'https://example.com/.well-known/serchat',
+            new AbortController().signal,
+        );
+
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+            expect(result.url).toBe('https://example.com/.well-known/serchat');
+            expect(result.body).toBe('verification-token\n');
+            expect(result.contentType).toBe('text/plain');
+        }
+    });
+
     it.each([
         ['CGNAT', 'http://100.64.0.1/'],
         ['IANA special purpose', 'http://192.0.0.1/'],

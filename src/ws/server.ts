@@ -8,10 +8,11 @@ import {
     IWsEnvelope,
     OutgoingWsEvent,
     ScrapeEvent,
+    FetchTextEvent,
     PingEvent,
 } from '../types/ws.js';
 import { WorkQueue } from '../queue/workqueue.js';
-import { FetchResult } from '../types/fetch.js';
+import { FetchResult, TextFetchResult } from '../types/fetch.js';
 import { WsHandler, WsHandlerFn, buildHandlerMap } from './decorators.js';
 import { ILogger, ConsoleLogger } from './logger.js';
 
@@ -28,11 +29,17 @@ export class WsServer {
 
     private readonly options: WsServerOptions;
     private readonly queue: WorkQueue<string, FetchResult>;
+    private readonly textQueue: WorkQueue<string, TextFetchResult>;
     private readonly logger: ILogger;
 
-    constructor(options: WsServerOptions, queue: WorkQueue<string, FetchResult>) {
+    constructor(
+        options: WsServerOptions,
+        queue: WorkQueue<string, FetchResult>,
+        textQueue?: WorkQueue<string, TextFetchResult>,
+    ) {
         this.options = options;
         this.queue = queue;
+        this.textQueue = textQueue ?? (queue as unknown as WorkQueue<string, TextFetchResult>);
         this.logger = options.logger ?? new ConsoleLogger('WsServer');
     }
 
@@ -151,6 +158,33 @@ export class WsServer {
 
         try {
             const fetchResult = await this.queue.enqueue(url);
+            this.sendResponse(ws, envelope, {
+                type: 'JobSuccess',
+                payload: fetchResult,
+            });
+        } catch (error) {
+            const err = error as Error;
+            this.sendResponse(ws, envelope, {
+                type: 'JobFailure',
+                payload: { reason: err.message || 'Unknown error' },
+            });
+        }
+    }
+
+    @WsHandler('fetchText')
+    private async onFetchText(ws: WebSocket, envelope: IWsEnvelope<FetchTextEvent>): Promise<void> {
+        const url = envelope.event.payload.url;
+
+        if (!url) {
+            this.sendResponse(ws, envelope, {
+                type: 'JobFailure',
+                payload: { reason: 'Missing URL in fetchText payload' },
+            });
+            return;
+        }
+
+        try {
+            const fetchResult = await this.textQueue.enqueue(url);
             this.sendResponse(ws, envelope, {
                 type: 'JobSuccess',
                 payload: fetchResult,

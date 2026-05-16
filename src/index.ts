@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Fetcher } from './fetch/fetcher.js';
 import { WorkQueue } from './queue/workqueue.js';
 import { WsServer } from './ws/server.js';
-import { FetchResult } from './types/fetch.js';
+import { FetchResult, TextFetchResult } from './types/fetch.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -51,7 +51,17 @@ const queue = new WorkQueue<string, FetchResult>(
     },
 );
 
-const wsServer = new WsServer({ host, port }, queue);
+const textQueue = new WorkQueue<string, TextFetchResult>(
+    {
+        maxJobs: 10,
+        timeout: 15000,
+    },
+    async (url: string, signal: AbortSignal) => {
+        return await fetcher.fetchText(url, signal);
+    },
+);
+
+const wsServer = new WsServer({ host, port }, queue, textQueue);
 
 wsServer.start();
 

@@ -12,6 +12,14 @@ export interface FetchSuccess {
     themeColor?: string;
 }
 
+export interface TextFetchSuccess {
+    ok: true;
+    url: string; // final URL after redirects
+    size: number; // bytes
+    contentType: string;
+    body: string;
+}
+
 export interface FetchFailure {
     ok: false;
     url: string; // original URL
@@ -19,6 +27,7 @@ export interface FetchFailure {
 }
 
 export type FetchResult = FetchSuccess | FetchFailure;
+export type TextFetchResult = TextFetchSuccess | FetchFailure;
 
 export interface FetcherOptions {
     maxRedirects: number;
