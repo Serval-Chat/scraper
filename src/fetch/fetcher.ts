@@ -85,45 +85,42 @@ export class Fetcher {
             const html = data.toString('utf-8');
             const $ = cheerio.load(html);
 
-                const title =
-                    $('meta[property="og:title"]').attr('content') ||
-                    $('title').text() ||
-                    undefined;
-                const description =
-                    $('meta[property="og:description"]').attr('content') ||
-                    $('meta[name="description"]').attr('content') ||
-                    undefined;
-                const image = $('meta[property="og:image"]').attr('content') || undefined;
-                const providerName =
-                    $('meta[property="og:site_name"]').attr('content') || undefined;
-                const themeColor = $('meta[name="theme-color"]').attr('content') || undefined;
+            const title =
+                $('meta[property="og:title"]').attr('content') || $('title').text() || undefined;
+            const description =
+                $('meta[property="og:description"]').attr('content') ||
+                $('meta[name="description"]').attr('content') ||
+                undefined;
+            const image = $('meta[property="og:image"]').attr('content') || undefined;
+            const providerName = $('meta[property="og:site_name"]').attr('content') || undefined;
+            const themeColor = $('meta[name="theme-color"]').attr('content') || undefined;
 
-                const result: FetchResult = {
-                    ok: true,
-                    url: currentUrl,
-                    size: totalSize,
-                    contentType: contentTypeHeader,
-                    mimeType,
-                    title,
-                    description,
-                    providerName,
-                    themeColor,
-                };
+            const result: FetchResult = {
+                ok: true,
+                url: currentUrl,
+                size: totalSize,
+                contentType: contentTypeHeader,
+                mimeType,
+                title,
+                description,
+                providerName,
+                themeColor,
+            };
 
-                if (image) {
-                    try {
-                        const absoluteImageUrl = new URL(image, currentUrl).href;
+            if (image) {
+                try {
+                    const absoluteImageUrl = new URL(image, currentUrl).href;
 
-                        if (absoluteImageUrl.startsWith('http')) {
-                            const proxiedUrl = await this.proxyImage(absoluteImageUrl);
-                            if (proxiedUrl) {
-                                result.image = proxiedUrl;
-                            }
+                    if (absoluteImageUrl.startsWith('http')) {
+                        const proxiedUrl = await this.proxyImage(absoluteImageUrl);
+                        if (proxiedUrl) {
+                            result.image = proxiedUrl;
                         }
-                    } catch (err) {
-                        console.error(`[Scraper] Failed to proxy image ${image}:`, err);
                     }
+                } catch (err) {
+                    console.error(`[Scraper] Failed to proxy image ${image}:`, err);
                 }
+            }
 
             return result;
         } catch (error: unknown) {
@@ -305,7 +302,10 @@ export class Fetcher {
                 buffer = Buffer.from(response.data);
             }
 
-            await sharp(buffer)
+            const fileType = await fileTypeFromBuffer(buffer);
+            const isAnimated = fileType?.mime === 'image/gif' || fileType?.mime === 'image/webp';
+
+            await sharp(buffer, { animated: isAnimated })
                 .resize(1200, 630, { fit: 'inside', withoutEnlargement: true })
                 .webp({ quality: 80 })
                 .toFile(filePath);

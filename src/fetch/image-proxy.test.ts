@@ -178,4 +178,41 @@ describe('Fetcher Image Proxying', () => {
 
         expect(axios.get).not.toHaveBeenCalled();
     });
+
+    it('should set animated: true in sharp options for animated GIF images', async () => {
+        const html = `
+            <html>
+                <head>
+                    <meta property="og:image" content="https://example.com/animation.gif">
+                </head>
+                <body></body>
+            </html>
+        `;
+
+        vi.mocked(fetch).mockResolvedValue({
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'text/html' }),
+            body: new ReadableStream({
+                start(c): void {
+                    c.enqueue(new TextEncoder().encode(html));
+                    c.close();
+                },
+            }),
+        } as Response);
+
+        const gifBuffer = Buffer.from('GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;');
+        vi.mocked(axios.get).mockResolvedValue({
+            data: gifBuffer,
+        });
+
+        vi.mocked(fs.access).mockRejectedValue(new Error('not found'));
+        vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+
+        const fetcher = new Fetcher(defaultOptions);
+        const result = await fetcher.fetch('https://example.com', new AbortController().signal);
+
+        expect(result.ok).toBe(true);
+        expect(sharp).toHaveBeenCalledWith(gifBuffer, { animated: true });
+    });
 });
