@@ -8,7 +8,11 @@ export interface FetchSuccess {
     description?: string;
     image?: string;
     video?: string;
+    embedVideoUrl?: string;
+    authorName?: string;
+    authorUrl?: string;
     providerName?: string;
+    providerUrl?: string;
     themeColor?: string;
 }
 

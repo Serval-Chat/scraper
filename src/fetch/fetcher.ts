@@ -7,7 +7,6 @@ import sharp from 'sharp';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import axios from 'axios';
 
 export class Fetcher {
     private readonly options: FetcherOptions;
@@ -16,8 +15,17 @@ export class Fetcher {
         this.options = options;
     }
 
+    private readonly youtubeVideoIdRegex =
+        /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+
     public async fetch(url: string, signal: AbortSignal): Promise<FetchResult> {
         console.log(`[Scraper] Starting fetch for: ${url}`);
+
+        const youtubeMatch = this.youtubeVideoIdRegex.exec(url);
+        if (youtubeMatch) {
+            const videoId = youtubeMatch[1];
+            return this.fetchYouTube(url, videoId, signal);
+        }
 
         try {
             const fetched = await this.fetchBytes(url, signal);
@@ -46,7 +54,7 @@ export class Fetcher {
             }
 
             if (mimeType.startsWith('image/')) {
-                const proxiedUrl = await this.proxyImage(currentUrl, data);
+                const proxiedUrl = await this.proxyImage(currentUrl, signal, data);
                 let title: string | undefined;
                 try {
                     title = path.basename(new URL(currentUrl).pathname);
@@ -112,7 +120,7 @@ export class Fetcher {
                     const absoluteImageUrl = new URL(image, currentUrl).href;
 
                     if (absoluteImageUrl.startsWith('http')) {
-                        const proxiedUrl = await this.proxyImage(absoluteImageUrl);
+                        const proxiedUrl = await this.proxyImage(absoluteImageUrl, signal);
                         if (proxiedUrl) {
                             result.image = proxiedUrl;
                         }
@@ -136,6 +144,81 @@ export class Fetcher {
             }
 
             return { ok: false, url, reason: `Network error: ${String(error)}` };
+        }
+    }
+
+    private async fetchYouTube(
+        url: string,
+        videoId: string,
+        signal: AbortSignal,
+    ): Promise<FetchResult> {
+        console.log(`[Scraper] YouTube fast-path for video ID: ${videoId}`);
+
+        const embedVideoUrl = `https://www.youtube.com/embed/${videoId}`;
+        const fallbackThumbnailUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+
+        try {
+            const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+            const timeoutSignal = AbortSignal.timeout(5000);
+            const combined = AbortSignal.any([signal, timeoutSignal]);
+
+            const resp = await fetch(oembedUrl, {
+                headers: { 'User-Agent': 'Serchat/1.0' },
+                signal: combined,
+            });
+
+            const thumbnailUrl = resp.ok
+                ? ((await resp.json()) as {
+                      title?: string;
+                      author_name?: string;
+                      author_url?: string;
+                      thumbnail_url?: string;
+                      thumbnail_width?: number;
+                      thumbnail_height?: number;
+                  })
+                : null;
+
+            const data =
+                typeof thumbnailUrl === 'object' && thumbnailUrl !== null
+                    ? thumbnailUrl
+                    : {
+                          title: undefined,
+                          author_name: undefined,
+                          author_url: undefined,
+                          thumbnail_url: undefined,
+                      };
+
+            const rawThumbUrl = data.thumbnail_url ?? fallbackThumbnailUrl;
+            const proxiedThumb = await this.proxyImage(rawThumbUrl, signal);
+
+            return {
+                ok: true,
+                url,
+                size: 0,
+                contentType: 'text/html',
+                mimeType: 'text/html',
+                title: data.title,
+                embedVideoUrl,
+                authorName: data.author_name,
+                authorUrl: data.author_url,
+                providerName: 'YouTube',
+                providerUrl: 'https://www.youtube.com',
+                image: proxiedThumb ?? undefined,
+            };
+        } catch (err) {
+            console.error(`[Scraper] YouTube oEmbed failed for ${url}:`, err);
+            const proxiedThumb = await this.proxyImage(fallbackThumbnailUrl, signal);
+            return {
+                ok: true,
+                url,
+                size: 0,
+                contentType: 'text/html',
+                mimeType: 'text/html',
+                embedVideoUrl,
+                providerName: 'YouTube',
+                providerUrl: 'https://www.youtube.com',
+                image: proxiedThumb ?? undefined,
+            };
         }
     }
 
@@ -271,7 +354,11 @@ export class Fetcher {
         }
     }
 
-    private async proxyImage(imageUrl: string, preFetchedData?: Buffer): Promise<string | null> {
+    private async proxyImage(
+        imageUrl: string,
+        signal: AbortSignal,
+        preFetchedData?: Buffer,
+    ): Promise<string | null> {
         try {
             const hash = crypto.createHash('md5').update(imageUrl).digest('hex');
             const cacheDir = path.join(process.cwd(), 'public', 'cache');
@@ -292,14 +379,11 @@ export class Fetcher {
             if (preFetchedData) {
                 buffer = preFetchedData;
             } else {
-                const response = await axios.get(imageUrl, {
-                    responseType: 'arraybuffer',
-                    timeout: 5000,
-                    headers: {
-                        'User-Agent': 'SerchatBot/1.0',
-                    },
-                });
-                buffer = Buffer.from(response.data);
+                const fetched = await this.fetchBytes(imageUrl, signal);
+                if (!fetched.ok) {
+                    return null;
+                }
+                buffer = fetched.data;
             }
 
             const fileType = await fileTypeFromBuffer(buffer);

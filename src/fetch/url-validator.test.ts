@@ -302,6 +302,19 @@ describe('validateUrl', () => {
             const result = await validateUrl('https://example.com');
             expect(result.ok).toBe(true);
         });
+
+        it.each([
+            ['_metadata.ser.chat', '169.254.169.254'],
+            ['_private.ser.chat', '10.0.0.2'],
+        ])('should block %s when DNS resolves to %s', async (hostname, address) => {
+            mockDns(address);
+
+            const result = await validateUrl(`https://${hostname}/`);
+
+            expect(dns.lookup).toHaveBeenCalledWith(hostname);
+            expect(result.ok).toBe(false);
+            if (!result.ok) expect(result.reason).toBe('URL not allowed');
+        });
     });
 
     describe('Edge case bypass attempts', () => {
