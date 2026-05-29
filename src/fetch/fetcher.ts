@@ -154,7 +154,7 @@ export class Fetcher {
     ): Promise<FetchResult> {
         console.log(`[Scraper] YouTube fast-path for video ID: ${videoId}`);
 
-        const embedVideoUrl = `https://www.youtube.com/embed/${videoId}`;
+        const embedVideoUrl = `https://www.youtube-nocookie.com/embed/${videoId}`;
         const fallbackThumbnailUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
 
         try {
