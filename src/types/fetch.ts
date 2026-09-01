@@ -7,7 +7,11 @@ export interface FetchSuccess {
     title?: string;
     description?: string;
     image?: string;
+    imageWidth?: number;
+    imageHeight?: number;
     video?: string;
+    videoWidth?: number;
+    videoHeight?: number;
     embedVideoUrl?: string;
     authorName?: string;
     authorUrl?: string;

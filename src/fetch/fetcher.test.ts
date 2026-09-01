@@ -16,6 +16,34 @@ vi.mock('../fetch/url-validator.js', async (importOriginal) => {
     };
 });
 
+const sharpMocks = vi.hoisted(() => ({
+    toFile: vi.fn(),
+    metadata: vi.fn(),
+    webp: vi.fn(),
+    resize: vi.fn(),
+}));
+
+vi.mock('sharp', () => {
+    const instance = {
+        resize: sharpMocks.resize,
+        webp: sharpMocks.webp,
+        toFile: sharpMocks.toFile,
+        metadata: sharpMocks.metadata,
+    };
+    sharpMocks.resize.mockReturnValue(instance);
+    sharpMocks.webp.mockReturnValue(instance);
+    return { default: vi.fn(() => instance) };
+});
+
+const fsMocks = vi.hoisted(() => ({
+    mkdir: vi.fn(),
+    access: vi.fn(),
+}));
+
+vi.mock('node:fs/promises', () => ({
+    default: fsMocks,
+}));
+
 describe('Fetcher', () => {
     const defaultOptions: FetcherOptions = {
         maxRedirects: 2,
@@ -28,6 +56,10 @@ describe('Fetcher', () => {
         vi.stubGlobal('fetch', vi.fn());
         vi.mocked(validateUrl).mockClear();
         vi.mocked(fileTypeFromBuffer).mockReset();
+        sharpMocks.toFile.mockReset();
+        sharpMocks.metadata.mockReset();
+        fsMocks.mkdir.mockReset().mockResolvedValue(undefined);
+        fsMocks.access.mockReset().mockRejectedValue(new Error('ENOENT'));
     });
 
     afterEach(() => {
@@ -786,6 +818,159 @@ describe('Fetcher', () => {
             expect(result.ok).toBe(false);
             if (!result.ok) {
                 expect(result.reason).toBe('Response body is empty');
+            }
+        });
+    });
+
+    describe('image dimension extraction', () => {
+        it('should attach width/height when directly fetching an image', async () => {
+            vi.mocked(fetch).mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'content-type': 'image/png' }),
+                body: new ReadableStream({
+                    start(c): void {
+                        c.enqueue(new Uint8Array([1, 2, 3, 4]));
+                        c.close();
+                    },
+                }),
+            } as Response);
+
+            vi.mocked(fileTypeFromBuffer).mockResolvedValue({
+                mime: 'image/png',
+                ext: 'png',
+            } as never);
+
+            sharpMocks.toFile.mockResolvedValue({
+                width: 1200,
+                height: 675,
+            } as never);
+
+            const fetcher = new Fetcher({
+                ...defaultOptions,
+                allowedContentTypes: [...defaultOptions.allowedContentTypes, 'image/png'],
+            });
+            const result = await fetcher.fetch(
+                'https://example.com/photo.png',
+                new AbortController().signal,
+            );
+
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.image).toBeDefined();
+                expect(result.imageWidth).toBe(1200);
+                expect(result.imageHeight).toBe(675);
+            }
+        });
+
+        it('should attach width/height for an og:image found on an HTML page', async () => {
+            const html =
+                '<html><head><meta property="og:image" content="https://example.com/photo.jpg"></head></html>';
+
+            vi.mocked(fetch)
+                .mockResolvedValueOnce({
+                    ok: true,
+                    status: 200,
+                    headers: new Headers({ 'content-type': 'text/html' }),
+                    body: new ReadableStream({
+                        start(c): void {
+                            c.enqueue(new TextEncoder().encode(html));
+                            c.close();
+                        },
+                    }),
+                } as Response)
+                .mockResolvedValueOnce({
+                    ok: true,
+                    status: 200,
+                    headers: new Headers({ 'content-type': 'image/jpeg' }),
+                    body: new ReadableStream({
+                        start(c): void {
+                            c.enqueue(new Uint8Array([5, 6, 7, 8]));
+                            c.close();
+                        },
+                    }),
+                } as Response);
+
+            vi.mocked(fileTypeFromBuffer)
+                .mockResolvedValueOnce(undefined)
+                .mockResolvedValueOnce({ mime: 'image/jpeg', ext: 'jpg' } as never);
+
+            sharpMocks.toFile.mockResolvedValue({
+                width: 800,
+                height: 420,
+            } as never);
+
+            const fetcher = new Fetcher(defaultOptions);
+            const result = await fetcher.fetch('https://example.com', new AbortController().signal);
+
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.image).toBeDefined();
+                expect(result.imageWidth).toBe(800);
+                expect(result.imageHeight).toBe(420);
+            }
+        });
+
+        it('should read width/height from an already-cached proxied image without re-fetching it', async () => {
+            const html =
+                '<html><head><meta property="og:image" content="https://example.com/photo.jpg"></head></html>';
+
+            vi.mocked(fetch).mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'content-type': 'text/html' }),
+                body: new ReadableStream({
+                    start(c): void {
+                        c.enqueue(new TextEncoder().encode(html));
+                        c.close();
+                    },
+                }),
+            } as Response);
+
+            vi.mocked(fileTypeFromBuffer).mockResolvedValueOnce(undefined);
+            fsMocks.access.mockResolvedValue(undefined);
+            sharpMocks.metadata.mockResolvedValue({ width: 500, height: 300 } as never);
+
+            const fetcher = new Fetcher(defaultOptions);
+            const result = await fetcher.fetch('https://example.com', new AbortController().signal);
+
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.imageWidth).toBe(500);
+                expect(result.imageHeight).toBe(300);
+            }
+            expect(fetch).toHaveBeenCalledTimes(1);
+            expect(sharpMocks.toFile).not.toHaveBeenCalled();
+        });
+
+        it('should omit width/height when the cached file has no readable metadata', async () => {
+            const html =
+                '<html><head><meta property="og:image" content="https://example.com/photo.jpg"></head></html>';
+
+            vi.mocked(fetch).mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'content-type': 'text/html' }),
+                body: new ReadableStream({
+                    start(c): void {
+                        c.enqueue(new TextEncoder().encode(html));
+                        c.close();
+                    },
+                }),
+            } as Response);
+
+            vi.mocked(fileTypeFromBuffer).mockResolvedValueOnce(undefined);
+            fsMocks.access.mockResolvedValue(undefined);
+            sharpMocks.metadata.mockResolvedValue({} as never);
+
+            const fetcher = new Fetcher(defaultOptions);
+            const result = await fetcher.fetch('https://example.com', new AbortController().signal);
+
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.image).toBeUndefined();
+                expect(result.imageWidth).toBeUndefined();
+                expect(result.imageHeight).toBeUndefined();
             }
         });
     });

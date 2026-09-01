@@ -1,5 +1,6 @@
 import { FetcherOptions, FetchResult, TextFetchResult } from '../types/fetch.js';
 import { validateUrl } from './url-validator.js';
+import { readVideoDimensions } from './video-dimensions.js';
 import { UrlValidationResult } from '../types/url-validator.js';
 import { fileTypeFromBuffer } from 'file-type';
 import * as cheerio from 'cheerio';
@@ -54,7 +55,7 @@ export class Fetcher {
             }
 
             if (mimeType.startsWith('image/')) {
-                const proxiedUrl = await this.proxyImage(currentUrl, signal, data);
+                const proxied = await this.proxyImage(currentUrl, signal, data);
                 let title: string | undefined;
                 try {
                     title = path.basename(new URL(currentUrl).pathname);
@@ -67,7 +68,9 @@ export class Fetcher {
                     size: totalSize,
                     contentType: contentTypeHeader,
                     mimeType,
-                    image: proxiedUrl ? proxiedUrl : undefined,
+                    image: proxied?.fileName,
+                    imageWidth: proxied?.width,
+                    imageHeight: proxied?.height,
                     title: title || undefined,
                 };
             }
@@ -79,6 +82,7 @@ export class Fetcher {
                 } catch (err) {
                     console.error(`[Scraper] Failed to parse title from ${currentUrl}:`, err);
                 }
+                const dimensions = await readVideoDimensions(data);
                 return {
                     ok: true,
                     url: currentUrl,
@@ -86,6 +90,8 @@ export class Fetcher {
                     contentType: contentTypeHeader,
                     mimeType,
                     video: currentUrl,
+                    videoWidth: dimensions?.width,
+                    videoHeight: dimensions?.height,
                     title: title || undefined,
                 };
             }
@@ -120,9 +126,11 @@ export class Fetcher {
                     const absoluteImageUrl = new URL(image, currentUrl).href;
 
                     if (absoluteImageUrl.startsWith('http')) {
-                        const proxiedUrl = await this.proxyImage(absoluteImageUrl, signal);
-                        if (proxiedUrl) {
-                            result.image = proxiedUrl;
+                        const proxied = await this.proxyImage(absoluteImageUrl, signal);
+                        if (proxied) {
+                            result.image = proxied.fileName;
+                            result.imageWidth = proxied.width;
+                            result.imageHeight = proxied.height;
                         }
                     }
                 } catch (err) {
@@ -203,7 +211,9 @@ export class Fetcher {
                 authorUrl: data.author_url,
                 providerName: 'YouTube',
                 providerUrl: 'https://www.youtube.com',
-                image: proxiedThumb ?? undefined,
+                image: proxiedThumb?.fileName,
+                imageWidth: proxiedThumb?.width,
+                imageHeight: proxiedThumb?.height,
             };
         } catch (err) {
             console.error(`[Scraper] YouTube oEmbed failed for ${url}:`, err);
@@ -217,7 +227,9 @@ export class Fetcher {
                 embedVideoUrl,
                 providerName: 'YouTube',
                 providerUrl: 'https://www.youtube.com',
-                image: proxiedThumb ?? undefined,
+                image: proxiedThumb?.fileName,
+                imageWidth: proxiedThumb?.width,
+                imageHeight: proxiedThumb?.height,
             };
         }
     }
@@ -358,7 +370,7 @@ export class Fetcher {
         imageUrl: string,
         signal: AbortSignal,
         preFetchedData?: Buffer,
-    ): Promise<string | null> {
+    ): Promise<{ fileName: string; width: number; height: number } | null> {
         try {
             const hash = crypto.createHash('md5').update(imageUrl).digest('hex');
             const cacheDir = path.join(process.cwd(), 'public', 'cache');
@@ -369,7 +381,11 @@ export class Fetcher {
 
             try {
                 await fs.access(filePath);
-                return fileName;
+                const { width, height } = await sharp(filePath).metadata();
+                if (width && height) {
+                    return { fileName, width, height };
+                }
+                return null;
             } catch (err) {
                 // Cache miss, we need to process the image
                 void err;
@@ -389,12 +405,12 @@ export class Fetcher {
             const fileType = await fileTypeFromBuffer(buffer);
             const isAnimated = fileType?.mime === 'image/gif' || fileType?.mime === 'image/webp';
 
-            await sharp(buffer, { animated: isAnimated })
+            const info = await sharp(buffer, { animated: isAnimated })
                 .resize(1200, 630, { fit: 'inside', withoutEnlargement: true })
                 .webp({ quality: 80 })
                 .toFile(filePath);
 
-            return fileName;
+            return { fileName, width: info.width, height: info.height };
         } catch (err) {
             console.error(`[Scraper] proxyImage failed for ${imageUrl}:`, err);
             return null;
